@@ -8,6 +8,7 @@ from openai import OpenAI
 import json
 import time
 import re
+from collections import defaultdict
 
 load_dotenv()
 
@@ -19,13 +20,14 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY is not set in .env file")
 
-BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")  # Uppdatera detta till Render-URL vid deploy
+BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")  # Uppdatera till Render-URL vid deploy
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Sätt denna i .env, t.ex. https://yourapp.onrender.com/webhook
 PORT = int(os.getenv("PORT", 5000))
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 app = Flask(__name__)
-PROFILE_FILE = "user_profiles.json"
+# Använd en dictionary i minnet istället för fil, eftersom vi inte har disk
+profiles = defaultdict(lambda: {"history": "", "is_premium": False, "plans": [], "tone": None, "focus_area": None, "last_schema_time": 0, "last_plan_reference": None, "goals": []})
 
 def detect_language(text):
     text = text.lower()
@@ -60,18 +62,6 @@ TRANSLATIONS = {
     }
 }
 
-def load_profiles():
-    if os.path.exists(PROFILE_FILE):
-        with open(PROFILE_FILE, "r") as f:
-            profiles = json.load(f)
-            print("Loaded profiles:", profiles)
-            return profiles
-    return {}
-
-def save_profiles(profiles):
-    with open(PROFILE_FILE, "w") as f:
-        json.dump(profiles, f)
-
 def generate_plan_name(schedule, focus_area):
     activities = re.findall(r'(?:Mån|Tis|Ons|Tor|Fre|Lör|Sön): ([^\n]+)', schedule)
     unique_activities = set(activities)
@@ -92,31 +82,25 @@ def find_plan_by_name(plans, name):
             return idx
     return None
 
-# Webhook endpoint
 async def webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    user_id = str(update.effective_user.id)
     user_message = update.message.text if update.message else ""
     chat_id = update.message.chat_id
 
-    profiles = load_profiles()
-    if str(user_id) not in profiles:
-        profiles[str(user_id)] = {"history": "", "is_premium": False}
+    is_premium = profiles[user_id].get("is_premium", False)
 
-    is_premium = profiles.get(str(user_id), {}).get("is_premium", False)
-
-    coach_response = get_llm_response(user_id, user_message, profiles)[0]  # Ta bara texten
-    profiles[str(user_id)]["history"] += f"\nAnvändaren: {user_message}\n{coach_response}"
+    coach_response = get_llm_response(user_id, user_message, profiles)[0]
+    profiles[user_id]["history"] += f"\nAnvändaren: {user_message}\n{coach_response}"
     if "Välj 1)" in coach_response and user_message in ["1", "2", "3"]:
-        profiles[str(user_id)]["tone"] = user_message
+        profiles[user_id]["tone"] = user_message
     elif "fokusera på" in coach_response.lower() and user_message.lower() in ["träning", "mindset", "karriär", "ekonomi", "produktivitet", "training", "mindset", "career", "finance", "productivity"]:
-        profiles[str(user_id)]["focus_area"] = user_message.lower()
+        profiles[user_id]["focus_area"] = user_message.lower()
 
-    save_profiles(profiles)
     await context.bot.send_message(chat_id=chat_id, text=coach_response)
 
 def get_llm_response(user_id, user_message, profiles):
-    profile = profiles.get(str(user_id), {})
-    chat_history = profile.get("history", "")
+    profile = profiles[user_id]
+    chat_history = profile["history"]
     tone = profile.get("tone", None)
     focus_area = profile.get("focus_area", None)
     is_premium = profile.get("is_premium", False)
@@ -233,7 +217,7 @@ def get_llm_response(user_id, user_message, profiles):
             coach_response = f"{translations['error_generating']}\n{translations['plan_created']}\n{translations['plan_link']}{url}"
             return coach_response, None
 
-    profile = profiles.get(str(user_id), {})
+    profile = profiles[user_id]
     if any(keyword in user_message.lower() for keyword in ["schema", "plan", "skapa", "ge mig", "create", "give"]) and plan_reference is not None:
         profile["last_plan_reference"] = plan_reference
     elif "kl" in user_message.lower() or "at" in user_message.lower() and is_premium:
