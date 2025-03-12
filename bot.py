@@ -9,7 +9,6 @@ import json
 import time
 import re
 from collections import defaultdict
-import asyncio
 
 load_dotenv()
 
@@ -22,7 +21,6 @@ if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY is not set in .env file")
 
 BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")  # Uppdatera till Render-URL vid deploy
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Sätt denna i .env, t.ex. https://yourapp.onrender.com/webhook
 PORT = int(os.getenv("PORT", 5000))
 
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -226,22 +224,30 @@ def get_llm_response(user_id, user_message, profiles):
 
 @app.route('/webhook', methods=['POST'])
 async def webhook():
+    print("Received webhook update:", request.get_json())  # Logga inkommande uppdateringar
     update = Update.de_json(request.get_json(), application.bot)
-    await webhook(update, application)
-    return jsonify({'status': 'ok'})
+    if update:
+        user_id = str(update.effective_user.id)
+        user_message = update.message.text if update.message else ""
+        chat_id = update.message.chat_id if update.message else None
 
-async def start_webhook(application):
-    if WEBHOOK_URL:
-        await application.bot.set_webhook(url=WEBHOOK_URL)
-    print(f"Webhook set to {WEBHOOK_URL}")
+        if chat_id:
+            is_premium = profiles[user_id].get("is_premium", False)
+            coach_response = get_llm_response(user_id, user_message, profiles)[0]
+            profiles[user_id]["history"] += f"\nAnvändaren: {user_message}\n{coach_response}"
+            if "Välj 1)" in coach_response and user_message in ["1", "2", "3"]:
+                profiles[user_id]["tone"] = user_message
+            elif "fokusera på" in coach_response.lower() and user_message.lower() in ["träning", "mindset", "karriär", "ekonomi", "produktivitet", "training", "mindset", "career", "finance", "productivity"]:
+                profiles[user_id]["focus_area"] = user_message.lower()
+
+            await application.bot.send_message(chat_id=chat_id, text=coach_response)
+    return jsonify({'status': 'ok'})
 
 if __name__ == '__main__':
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, webhook))
     application.job_queue.run_repeating(check_goals, interval=3600, first=10)
 
-    # Kör webhook-inställningen asynkront
-    asyncio.run(start_webhook(application))
-
     # Kör Flask-appen
+    print("Starting Flask server...")
     app.run(host='0.0.0.0', port=PORT)
