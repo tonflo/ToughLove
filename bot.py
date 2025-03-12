@@ -9,6 +9,7 @@ import json
 import time
 import re
 from collections import defaultdict
+import asyncio
 
 load_dotenv()
 
@@ -81,6 +82,15 @@ def find_plan_by_name(plans, name):
         if name in plan["name"].lower():
             return idx
     return None
+
+async def check_goals(context):
+    for user_id, profile in profiles.items():
+        if profile.get("is_premium", False) and "goals" in profile:
+            for goal in profile["goals"]:
+                if not goal["done"] and time.strftime("%H:%M") >= goal["time"]:
+                    lang = detect_language(profile["history"])
+                    message = "Hur gick det med {task}?" if lang == "sv" else "How did it go with {task}?"
+                    await context.bot.send_message(chat_id=int(user_id), text=message.format(task=goal["task"]))
 
 def get_llm_response(user_id, user_message, profiles):
     profile = profiles[user_id]
@@ -214,29 +224,24 @@ def get_llm_response(user_id, user_message, profiles):
 
     return coach_response, None
 
-async def check_goals(context):
-    for user_id, profile in profiles.items():
-        if profile.get("is_premium", False) and "goals" in profile:
-            for goal in profile["goals"]:
-                if not goal["done"] and time.strftime("%H:%M") >= goal["time"]:
-                    lang = detect_language(profile["history"])
-                    message = "Hur gick det med {task}?" if lang == "sv" else "How did it go with {task}?"
-                    await context.bot.send_message(chat_id=int(user_id), text=message.format(task=goal["task"]))
-
 @app.route('/webhook', methods=['POST'])
 async def webhook():
     update = Update.de_json(request.get_json(), application.bot)
     await webhook(update, application)
     return jsonify({'status': 'ok'})
 
+async def start_webhook(application):
+    if WEBHOOK_URL:
+        await application.bot.set_webhook(url=WEBHOOK_URL)
+    print(f"Webhook set to {WEBHOOK_URL}")
+
 if __name__ == '__main__':
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, webhook))
     application.job_queue.run_repeating(check_goals, interval=3600, first=10)
 
-    # Ställ in webhook när boten startar
-    if WEBHOOK_URL:
-        application.bot.set_webhook(url=WEBHOOK_URL)
+    # Kör webhook-inställningen asynkront
+    asyncio.run(start_webhook(application))
 
     # Kör Flask-appen
     app.run(host='0.0.0.0', port=PORT)
