@@ -82,22 +82,6 @@ def find_plan_by_name(plans, name):
             return idx
     return None
 
-async def webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    user_message = update.message.text if update.message else ""
-    chat_id = update.message.chat_id
-
-    is_premium = profiles[user_id].get("is_premium", False)
-
-    coach_response = get_llm_response(user_id, user_message, profiles)[0]
-    profiles[user_id]["history"] += f"\nAnvändaren: {user_message}\n{coach_response}"
-    if "Välj 1)" in coach_response and user_message in ["1", "2", "3"]:
-        profiles[user_id]["tone"] = user_message
-    elif "fokusera på" in coach_response.lower() and user_message.lower() in ["träning", "mindset", "karriär", "ekonomi", "produktivitet", "training", "mindset", "career", "finance", "productivity"]:
-        profiles[user_id]["focus_area"] = user_message.lower()
-
-    await context.bot.send_message(chat_id=chat_id, text=coach_response)
-
 def get_llm_response(user_id, user_message, profiles):
     profile = profiles[user_id]
     chat_history = profile["history"]
@@ -229,6 +213,15 @@ def get_llm_response(user_id, user_message, profiles):
                 coach_response += "\nBra jobbat!" if lang == "sv" else "\nWell done!"
 
     return coach_response, None
+
+async def check_goals(context):
+    for user_id, profile in profiles.items():
+        if profile.get("is_premium", False) and "goals" in profile:
+            for goal in profile["goals"]:
+                if not goal["done"] and time.strftime("%H:%M") >= goal["time"]:
+                    lang = detect_language(profile["history"])
+                    message = "Hur gick det med {task}?" if lang == "sv" else "How did it go with {task}?"
+                    await context.bot.send_message(chat_id=int(user_id), text=message.format(task=goal["task"]))
 
 @app.route('/webhook', methods=['POST'])
 async def webhook():
